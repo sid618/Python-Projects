@@ -1,0 +1,132 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.metrics import confusion_matrix, classification_report
+from tensorflow.keras.applications import InceptionV3
+
+# Image dimensions and batch size configuration
+w, h = 224, 224  # InceptionV3 input size
+batch_size = 32  # Increased batch size for better GPU utilization
+
+# Paths to the dataset
+train_path = '/kaggle/input/blood-cells/dataset2-master/dataset2-master/images/TRAIN'
+test_path = '/kaggle/input/blood-cells/dataset2-master/dataset2-master/images/TEST'
+val_path = '/kaggle/input/blood-cells/dataset2-master/dataset2-master/images/TEST_SIMPLE'
+
+# Data generators for train, test, and validation datasets without additional augmentation
+train_img_gen = ImageDataGenerator(
+    rescale=1.0/255,
+)
+
+test_img_gen = ImageDataGenerator(rescale=1.0/255)
+val_img_gen = ImageDataGenerator(rescale=1.0/255)
+
+# Creating datasets from images without additional augmentation
+train_dataset = train_img_gen.flow_from_directory(
+    train_path,
+    target_size=(w, h),
+    batch_size=batch_size,
+    class_mode='categorical',
+    shuffle=True
+)
+
+test_dataset = test_img_gen.flow_from_directory(
+    test_path,
+    target_size=(w, h),
+    batch_size=batch_size,
+    class_mode='categorical',
+    shuffle=False
+)
+
+val_dataset = val_img_gen.flow_from_directory(
+    val_path,
+    target_size=(w, h),
+    batch_size=batch_size,
+    class_mode='categorical',
+    shuffle=False
+)
+
+# Extracting class names
+classes = list(train_dataset.class_indices.keys())
+print("Class names:", classes)
+
+# Building the InceptionV3 model with fine-tuning
+base_model_inception = InceptionV3(weights='imagenet', include_top=False, input_shape=(w, h, 3))
+
+# Fine-tuning the last few layers of InceptionV3
+for layer in base_model_inception.layers[:-30]:
+    layer.trainable = True
+
+model_inception = models.Sequential([
+    base_model_inception,
+    layers.GlobalAveragePooling2D(),
+    layers.Dense(256, activation='relu'),
+    layers.Dropout(0.5),  # Adjust dropout rate
+    layers.Dense(len(classes), activation='softmax')
+])
+
+# Model compilation
+optimizer = optimizers.Adam(learning_rate=1e-4)
+model_inception.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Model summary
+model_inception.summary()
+
+# Callbacks
+early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)  # Use 'val_loss' for early stopping
+model_checkpoint = ModelCheckpoint(filepath='best_inception_model.h5', save_best_only=True, monitor='val_loss', mode='min')  # Monitor 'val_loss' and mode 'min'
+
+# Training the model
+# Training the model
+epochs = 15
+history_inception = model_inception.fit(
+    train_dataset,
+    epochs=epochs,
+    validation_data=val_dataset,
+    callbacks=[early_stopping, model_checkpoint]
+)
+
+# Loading the best model
+model_inception.load_weights('best_inception_model.h5')
+
+# Plotting training curves
+plt.figure(figsize=(12, 6))
+
+# Plot training & validation accuracy values
+plt.subplot(1, 2, 1)
+plt.plot(history_inception.history['accuracy'])
+plt.plot(history_inception.history['val_accuracy'])
+plt.title('Model accuracy')
+plt.ylabel('Accuracy')
+plt.xlabel('Epoch')
+plt.legend(['Train', 'Validation'], loc='upper left')
+
+# Plot training & validation loss values
+plt.subplot(1, 2, 2)
+plt.plot(history_inception.history['loss'])
+plt.plot(history_inception.history['val_loss'])
+plt.title('Model loss')
+plt.ylabel('Loss')
+plt.xlabel('Epoch')
+plt.legend(['Train', 'Validation'], loc='upper left')
+
+plt.tight_layout()
+plt.show()
+
+# Predicting on test dataset
+predictions = model_inception.predict(test_dataset)
+predicted_class_indices = np.argmax(predictions, axis=1)
+
+# Evaluation metrics
+true_labels = test_dataset.classes
+print(classification_report(true_labels, predicted_class_indices, target_names=classes))
+sns.heatmap(confusion_matrix(true_labels, predicted_class_indices), annot=True, fmt='d', xticklabels=classes, yticklabels=classes)
+plt.title('Confusion Matrix')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.show()
+
