@@ -1,0 +1,116 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from sklearn.metrics import confusion_matrix, classification_report
+
+# Image dimensions and batch size
+w, h = 224, 224
+batch_size = 32
+
+# Dataset paths
+dataset_path = '/kaggle/input/blood-cells'
+train_path = os.path.join(dataset_path, 'dataset2-master/dataset2-master/images/TRAIN')
+test_path = os.path.join(dataset_path, 'dataset2-master/dataset2-master/images/TEST')
+val_path = os.path.join(dataset_path, 'dataset2-master/dataset2-master/images/TEST_SIMPLE')
+
+# Data generators
+train_img_gen = ImageDataGenerator(rescale=1.0/255)
+val_img_gen = ImageDataGenerator(rescale=1.0/255)
+test_img_gen = ImageDataGenerator(rescale=1.0/255)
+
+train_dataset = train_img_gen.flow_from_directory(
+    train_path, target_size=(w, h), batch_size=batch_size,
+    class_mode='categorical', shuffle=True
+)
+val_dataset = val_img_gen.flow_from_directory(
+    val_path, target_size=(w, h), batch_size=batch_size,
+    class_mode='categorical', shuffle=False
+)
+test_dataset = test_img_gen.flow_from_directory(
+    test_path, target_size=(w, h), batch_size=batch_size,
+    class_mode='categorical', shuffle=False
+)
+
+# Class labels
+classes = list(train_dataset.class_indices.keys())
+print("Class names:", classes)
+
+# ResNet50 base model
+base_model_resnet = ResNet50(weights='imagenet', include_top=False, input_shape=(w, h, 3))
+base_model_resnet.trainable = False  # Freeze base layers for transfer learning
+
+# Model architecture
+model_resnet = models.Sequential([
+    base_model_resnet,
+    layers.GlobalAveragePooling2D(),
+    layers.Dense(256, activation='relu'),
+    layers.Dropout(0.5),
+    layers.Dense(len(classes), activation='softmax')
+])
+
+# Compile the model
+optimizer = optimizers.Adam(learning_rate=1e-4)
+model_resnet.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
+
+model_resnet.summary()
+
+# Callbacks
+early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+checkpoint = ModelCheckpoint('best_resnet_model.h5', monitor='val_loss', save_best_only=True, mode='min')
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, min_lr=1e-6)
+
+# Train the model
+epochs = 20
+history_resnet = model_resnet.fit(
+    train_dataset,
+    validation_data=val_dataset,
+    epochs=epochs,
+    callbacks=[early_stopping, checkpoint, reduce_lr]
+)
+
+# Load best weights
+model_resnet.load_weights('best_resnet_model.h5')
+
+# Plot accuracy and loss
+plt.figure(figsize=(12, 6))
+
+plt.subplot(1, 2, 1)
+plt.plot(history_resnet.history['accuracy'], label='Train Acc')
+plt.plot(history_resnet.history['val_accuracy'], label='Val Acc')
+plt.title('Accuracy over Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history_resnet.history['loss'], label='Train Loss')
+plt.plot(history_resnet.history['val_loss'], label='Val Loss')
+plt.title('Loss over Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# Evaluate on test dataset
+predictions = model_resnet.predict(test_dataset)
+predicted_class_indices = np.argmax(predictions, axis=1)
+true_labels = test_dataset.classes
+
+# Classification report and confusion matrix
+print(classification_report(true_labels, predicted_class_indices, target_names=classes))
+
+cm = confusion_matrix(true_labels, predicted_class_indices)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', xticklabels=classes, yticklabels=classes, cmap='Blues')
+plt.title('Confusion Matrix')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.show()
