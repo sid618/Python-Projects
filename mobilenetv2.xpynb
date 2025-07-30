@@ -1,0 +1,132 @@
+\# Imports
+import os
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Data Setup
+BASE_DIR = "/kaggle/input/blood-cells/dataset2-master/dataset2-master/images/TRAIN/"
+CATEGORIES = ['EOSINOPHIL', 'LYMPHOCYTE', 'MONOCYTE', 'NEUTROPHIL']
+
+filepaths, labels = [], []
+for category in CATEGORIES:
+    class_path = os.path.join(BASE_DIR, category)
+    for file in os.listdir(class_path):
+        filepaths.append(os.path.join(class_path, file))
+        labels.append(category)
+
+data_df = pd.DataFrame({"filepaths": filepaths, "labels": labels})
+
+# Train-validation-test split
+train_df, test_df = train_test_split(data_df, test_size=0.3, stratify=data_df['labels'], random_state=42)
+train_df, val_df = train_test_split(train_df, test_size=0.2, stratify=train_df['labels'], random_state=42)
+
+# Image Generators
+image_gen = ImageDataGenerator(
+    preprocessing_function=tf.keras.applications.mobilenet_v2.preprocess_input,
+    rotation_range=20,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    zoom_range=0.1,
+    horizontal_flip=True,
+    vertical_flip=True
+)
+
+train_gen = image_gen.flow_from_dataframe(train_df, x_col='filepaths', y_col='labels',
+                                          target_size=(244, 244), class_mode='categorical', batch_size=8, shuffle=True)
+val_gen = image_gen.flow_from_dataframe(val_df, x_col='filepaths', y_col='labels',
+                                        target_size=(244, 244), class_mode='categorical', batch_size=8, shuffle=False)
+test_gen = image_gen.flow_from_dataframe(test_df, x_col='filepaths', y_col='labels',
+                                         target_size=(244, 244), class_mode='categorical', batch_size=8, shuffle=False)
+
+# Model: MobileNetV2
+base_model = tf.keras.applications.MobileNetV2(include_top=False, input_shape=(244, 244, 3), weights='imagenet')
+base_model.trainable = False  # Freeze base
+
+model = keras.Sequential([
+    base_model,
+    keras.layers.GlobalAveragePooling2D(),
+    keras.layers.Dropout(0.5),
+    keras.layers.Dense(256, activation='relu'),
+    keras.layers.Dropout(0.5),
+    keras.layers.Dense(4, activation='softmax')
+])
+
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+# Training
+history = model.fit(train_gen, epochs=20, validation_data=val_gen)
+
+# Evaluation
+test_loss, test_acc = model.evaluate(test_gen)
+print(f"Test Loss: {test_loss:.4f}")
+print(f"Test Accuracy: {test_acc:.4f}")
+
+# Save model
+model.save("MobileNetV2_BloodCellClassifier.h5")
+
+# Predictions and Metrics
+y_pred = np.argmax(model.predict(test_gen), axis=1)
+y_true = test_gen.classes
+class_names = list(test_gen.class_indices.keys())
+
+print("Classification Report:\n", classification_report(y_true, y_pred, target_names=class_names))
+
+# Confusion Matrix
+cm = confusion_matrix(y_true, y_pred)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, cmap='Blues', fmt='d', xticklabels=class_names, yticklabels=class_names)
+plt.title("Confusion Matrix")
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.show()
+
+# Random Prediction Visualization
+plt.figure(figsize=(15, 5))
+for i in range(5):
+    index = np.random.randint(len(test_gen))
+    img, label = test_gen[index]
+    prediction = np.argmax(model.predict(img), axis=1)[0]
+    true = np.argmax(label)
+    plt.subplot(1, 5, i+1)
+    plt.imshow(img[0])
+    plt.title(f"Pred: {class_names[prediction]}\nTrue: {class_names[true]}")
+    plt.axis('off')
+plt.tight_layout()
+plt.show()
+
+# Training Plots
+def plot_metrics(history):
+    epochs = range(1, len(history.history['loss']) + 1)
+
+    # Loss
+    plt.figure(figsize=(10, 5))
+    plt.plot(epochs, history.history['loss'], label='Train Loss')
+    plt.plot(epochs, history.history['val_loss'], label='Val Loss')
+    plt.title("Training and Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    # Accuracy
+    plt.figure(figsize=(10, 5))
+    plt.plot(epochs, history.history['accuracy'], label='Train Acc')
+    plt.plot(epochs, history.history['val_accuracy'], label='Val Acc')
+    plt.title("Training and Validation Accuracy")
+    plt.xlabel("Epochs")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+plot_metrics(history)
