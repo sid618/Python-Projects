@@ -1,0 +1,171 @@
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import plotly.express as px
+from matplotlib import pyplot as plt
+from sklearn.model_selection import train_test_split, cross_val_score, learning_curve
+from sklearn.ensemble import VotingClassifier, RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import confusion_matrix, recall_score, precision_score, f1_score, accuracy_score, classification_report
+from sklearn.preprocessing import StandardScaler
+from sklearn.neural_network import MLPClassifier  # Corrected import
+from sklearn.svm import SVC
+from xgboost import XGBClassifier
+from catboost import CatBoostClassifier
+from collections import Counter
+
+# Import data
+try:
+    raw_df = pd.read_csv('../input/heart-failure-prediction/heart.csv')
+except:
+    raw_df = pd.read_csv('heart.csv')
+
+# Data Pre-processing
+# Check for data imbalance
+labels = ["Healthy", "Heart Disease"]
+healthy_or_not = raw_df['HeartDisease'].value_counts().tolist()
+values = [healthy_or_not[0], healthy_or_not[1]]
+
+fig = px.pie(values=raw_df['HeartDisease'].value_counts(), names=labels, width=700, height=400, color_discrete_sequence=["skyblue", "black"], title="Healthy vs Heart Disease")
+fig.show()
+
+# Boxplots to check for outliers
+numerical_columns = list(raw_df.loc[:, ['Age', 'RestingBP', 'Cholesterol', 'MaxHR', 'Oldpeak']])
+categorical_columns = list(raw_df.loc[:, ['Sex', 'ChestPainType', 'FastingBS', 'RestingECG', 'ExerciseAngina', 'ST_Slope']])
+
+def boxplots_custom(dataset, columns_list, rows, cols, suptitle):
+    fig, axs = plt.subplots(rows, cols, sharey=True, figsize=(13, 5))
+    fig.suptitle(suptitle, y=1, size=25)
+    axs = axs.flatten()
+    for i, data in enumerate(columns_list):
+        sns.boxplot(data=dataset[data], orient='h', ax=axs[i])
+        axs[i].set_title(data + ', skewness is: ' + str(round(dataset[data].skew(axis=0, skipna=True), 2)))
+        
+boxplots_custom(dataset=raw_df, columns_list=numerical_columns, rows=2, cols=3, suptitle='Boxplots for each variable')
+plt.tight_layout()
+
+# Outlier detection using IQR method
+def IQR_method(df, n, features):
+    outlier_list = []
+    for column in features:
+        Q1 = np.percentile(df[column], 25)
+        Q3 = np.percentile(df[column], 75)
+        IQR = Q3 - Q1
+        outlier_step = 1.5 * IQR
+        outlier_list_column = df[(df[column] < Q1 - outlier_step) | (df[column] > Q3 + outlier_step)].index
+        outlier_list.extend(outlier_list_column)
+    outlier_list = Counter(outlier_list)        
+    multiple_outliers = list(k for k, v in outlier_list.items() if v > n)
+    return multiple_outliers
+
+Outliers_IQR = IQR_method(raw_df, 1, numerical_columns)
+df = raw_df.drop(Outliers_IQR, axis=0).reset_index(drop=True)
+
+# Create dummies for categorical variables
+df = pd.get_dummies(df, drop_first=True)
+
+# Train-test split
+X = df.drop('HeartDisease', axis=1)
+y = df['HeartDisease']
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.3, random_state=42)
+
+# Feature scaling
+def Standard_Scaler(df, col_names):
+    features = df[col_names]
+    scaler = StandardScaler().fit(features.values)
+    features = scaler.transform(features.values)
+    df[col_names] = features
+    return df
+
+col_names = numerical_columns
+X_train = Standard_Scaler(X_train, col_names)
+X_test = Standard_Scaler(X_test, col_names)
+
+# Model selection
+estimators = []
+estimators.append(('Neural Network', MLPClassifier(max_iter=10000)))
+estimators.append(('Logistic Regression', LogisticRegression(solver='lbfgs', multi_class='multinomial', max_iter=200)))
+estimators.append(('Random Forest', RandomForestClassifier()))
+estimators.append(('SVC', SVC(gamma='auto', probability=True)))
+estimators.append(('AdaBoost', AdaBoostClassifier()))
+estimators.append(('Gradient Boosting', GradientBoostingClassifier()))
+estimators.append(('XGBoost', XGBClassifier()))
+estimators.append(('CatBoost', CatBoostClassifier(verbose=0)))
+
+# Voting Classifier with soft voting
+soft_voting = VotingClassifier(estimators, voting='soft')
+soft_voting.fit(X_train, y_train)
+
+joblib.dump(soft_voting, "soft_voting_model.pkl")
+joblib.dump(scaler, "scaler.pkl")
+
+
+# Function to plot training and validation curves
+def plot_learning_curve(model, X_train, y_train, title="Learning Curves"):
+    # Generate learning curves using learning_curve() from sklearn
+    train_sizes, train_scores, validation_scores = learning_curve(
+        model, X_train, y_train, cv=5, train_sizes=np.linspace(0.1, 1.0, 10), scoring="accuracy", n_jobs=-1
+    )
+    
+    # Calculate the mean and std for training and validation scores
+    train_mean = np.mean(train_scores, axis=1)
+    train_std = np.std(train_scores, axis=1)
+    val_mean = np.mean(validation_scores, axis=1)
+    val_std = np.std(validation_scores, axis=1)
+
+    # Plot the learning curves
+    plt.figure(figsize=(8, 6))
+    plt.plot(train_sizes, train_mean, color="b", label="Training accuracy")
+    plt.plot(train_sizes, val_mean, color="r", label="Validation accuracy")
+    plt.fill_between(train_sizes, train_mean - train_std, train_mean + train_std, color="b", alpha=0.2)
+    plt.fill_between(train_sizes, val_mean - val_std, val_mean + val_std, color="r", alpha=0.2)
+    
+    plt.title(title)
+    plt.xlabel("Training Size")
+    plt.ylabel("Accuracy")
+    plt.legend(loc="best")
+    plt.grid(True)
+    plt.show()
+
+# Example: Plot learning curves for Soft Voting classifier
+print("Plotting Learning Curves for Soft Voting Classifier")
+plot_learning_curve(soft_voting, X_train, y_train, title="Soft Voting Classifier Learning Curves")
+
+# Evaluate soft voting classifier
+def evaluate_model(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+    print(f"Classification report:\n{classification_report(y_test, y_pred)}")
+    print(f"Confusion Matrix:\n{confusion_matrix(y_test, y_pred)}")
+    print(f"Accuracy: {accuracy_score(y_test, y_pred)}")
+    print(f"Precision: {precision_score(y_test, y_pred)}")
+    print(f"Recall: {recall_score(y_test, y_pred)}")
+    print(f"F1-Score: {f1_score(y_test, y_pred)}")
+    
+    # K-Fold Cross Validation
+    cross_val = cross_val_score(model, X_train, y_train, cv=7)
+    print(f"K-Fold Cross Validation Mean Accuracy: {cross_val.mean()}")
+    
+    return y_pred
+
+print("Soft Voting Results:")
+soft_voting_preds = evaluate_model(soft_voting, X_test, y_test)
+
+# AUC-ROC Curve
+from sklearn.metrics import roc_auc_score, roc_curve
+
+def plot_roc_curve(model, X_test, y_test):
+    y_prob = model.predict_proba(X_test)[:, 1]
+    fpr, tpr, thresholds = roc_curve(y_test, y_prob)
+    auc = roc_auc_score(y_test, y_prob)
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, color='b', label=f'AUC = {auc:.2f}')
+    plt.plot([0, 1], [0, 1], color='k', linestyle='--')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('AUC-ROC Curve for Soft Voting')
+    plt.legend(loc='best')
+    plt.show()
+
+# Plot AUC-ROC for Soft Voting
+print("AUC-ROC Curve for Soft Voting:")
+plot_roc_curve(soft_voting, X_test, y_test)
